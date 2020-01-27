@@ -1,0 +1,406 @@
+#!/usr/bin/perl -w
+
+# Save revision info from RCS into a variable so we can easily format
+# it in the output file of this script for reference.
+#
+
+
+use Getopt::Std;
+use vars qw($opt_c $opt_v $opt_h $opt_d);
+&getopt('cv');
+
+&help if $opt_h;
+&help if $#ARGV <= -1;
+
+# This variable holds string to search for in file to indicate the
+# start of the RCS log. Make sure this is not detected as the RCS log
+# indicator itself.
+$rcs_log_start  = '\$'.'Log:.*\$';
+$any_rcs = '\$\w+\:.*\$';
+
+# Global counters
+$total_cnt = 0;
+$total_blank = 0;
+$total_comment = 0;
+$total_dead_code = 0;
+$total_eol_cmt = 0;
+$total_blk_cmt = 0;
+$total_blank_cmt = 0;
+$total_rcs_log = 0;
+$total_0in = 0;
+$total_0in_line = 0;
+$total_foo_assrt = 0;
+$total_foo_assrt_line = 0;
+$total_foo_ifdef = 0;
+$total_foo_label = 0;
+$total_files = 0;
+$total_codereview = 0;
+$total_codereview_ar = 0;
+$total_todofixme = 0;
+
+foreach $file (@ARGV)
+{
+    if (-d $file) {
+	next;
+    }
+
+    # Flag specifically for foo (added here since &filetype will write to $foo_mode)
+    $foo_mode = 0;
+
+    my ($comment, $emode) = &filetype($file);
+    print "Detected comment: $comment emode: $emode\n" if ($opt_d);
+    
+    if ($comment eq "0") {
+	if ($opt_c) {
+	    $comment = $opt_c;
+	}
+	else {
+	    print "Cannot determine file type: $file, specify comment char with -c\n";
+	    next;
+	}
+    }
+
+    # Flags
+    $in_e_code = 0;
+    $in_rcs_log = 0;
+    $in_c_blk_comment = 0;
+    $in_0in = 0;
+    $in_foo_assrt = 0;
+    
+    # Per file counter
+    $code_line_cnt = 0;
+    $comment_line_cnt = 0;
+    $blank_comment_line_cnt = 0;
+    $blank_line_cnt = 0;
+    $eol_comment_line_cnt = 0;
+    $block_comment_line_cnt = 0;
+    $dead_code_cnt = 0;    
+    $rcs_line_cnt = 0;
+    $z0in_cnt = 0;
+    $z0in_line_cnt = 0;
+    $foo_assrt_cnt = 0;
+    $foo_assrt_line_cnt = 0;
+    $foo_ifdef_cnt = 0;
+    $foo_label_cnt = 0;
+    $codereview = 0;
+    $codereview_ar = 0;
+    $todofixme = 0;
+    
+    open (FILE, $file);
+    $total_files ++;
+    
+    while (<FILE>)
+    {
+        # This apply to specman e code only, identify begining of code. Counted as blank comment line
+        #
+        if ($emode and (/^\s*<\'/)) {
+            $in_e_code = 1;
+            # assume blank
+            $blank_comment_line_cnt++;
+            print "Entering Ecode: BLANKCMT: $_" if ($opt_d);
+        }
+
+        # This apply to specman e code only, identify end of code.
+        #
+        elsif ($emode and (/^\s*\'>/)) {
+            $in_e_code = 0;
+            # assume blank
+            $blank_comment_line_cnt++;
+            print "Exiting Ecode: BLANKCMT: $_" if ($opt_d);
+        }
+
+        # This apply to specman e code only, Here if we are in the freeform comment area of e.
+        #
+        elsif ($emode and ($in_e_code == 0)) {
+            # Block comment.
+
+            # Detect start of RCS log. Assume all remaining comments are log.
+            if (/$rcs_log_start/) {
+                $in_rcs_log = 1;
+            }
+            
+            if ($in_rcs_log || /$any_rcs/) {
+                $rcs_line_cnt++;
+                print "     RCS: $_" if ($opt_d);
+            }
+            
+            # Try to guess dead commented out code.
+            elsif (/;/) {
+                $dead_code_cnt++;
+                print "    DEAD1: $_" if ($opt_d);
+            }
+            
+            elsif (/\w/) {
+                $block_comment_line_cnt++;
+                print "BLOCKCMT: $_" if ($opt_d);
+            }
+            
+            else {
+                $blank_comment_line_cnt++;
+                print "BLANKCMT1: $_" if ($opt_d);
+            }
+        }
+
+        # Handle foo assertions
+        elsif ($foo_mode and /^\s*(RASSERT|ASSERT)/) {
+            $foo_assrt_cnt++;
+            $foo_assrt_line_cnt++;
+            print "   ASSRT: $_" if ($opt_d);
+            # if the line ends in a backslash ("\"), the assertion will continue on the next line
+            if (/\\\s*$/) {
+                $in_foo_assrt = 1;
+            }
+        }
+        elsif ($foo_mode and $in_foo_assrt) {
+            $foo_assrt_line_cnt++;
+            print "   ASSRT: $_" if ($opt_d);
+            # if the line doesn't end in a backslash ("\"), the assertion is done
+            if (not /\\\s*$/) {
+                $in_foo_assrt = 0;
+            }
+        }
+
+        # Handle foo ifdef lines (begin with "#")
+        elsif ($foo_mode and /^\s*#/) {
+            $foo_ifdef_cnt++;
+            print "   IFDEF: $_" if ($opt_d);
+        }
+
+        # Handle foo labels (begin with "$")
+        elsif ($foo_mode and /^\s*\$/) {
+            $foo_label_cnt++;
+            print "   LABEL: $_" if ($opt_d);
+        }
+
+        # We are in some type of comment lines here, also handle code/rcs log embedded in
+        # comment.
+        #
+	elsif (($in_c_blk_comment and !$emode) or (/^\s*($comment)+(.*)/)) {
+            $temp = $2;
+	    
+            # Detect start of RCS log. Assume all remaining comments are log.
+            if (/$rcs_log_start/) {
+                $in_rcs_log = 1;
+            }
+
+            # Detect start of c style block comment
+            if (/(^|[^\/])\/\*/) {
+                print "BEGIN_C_BLK_CMT: " if ($opt_d);
+                $in_c_blk_comment = 1;
+            }
+
+            # detech code review
+            if (/CODEREVIEW\s+AR/i) {
+                $codereview_ar ++;
+            }
+            elsif (/CODEREVIEW/i) {
+                $codereview ++;
+            }
+
+            if (/TODO|FIXME/) {
+                $todofixme ++;
+            }
+
+            if ($in_0in) {
+                $z0in_line_cnt ++;
+                print " 0inline: $_" if ($opt_d);
+            }
+            
+            elsif (/\/\/\s*0in/) {
+                $z0in_cnt ++;
+                $z0in_line_cnt ++;
+                print "     0in: $_" if ($opt_d);
+            }
+
+            elsif (/\/\*\s*0in/) {
+                $z0in_cnt ++;
+                $z0in_line_cnt ++;
+                $in_0in = 1;
+                print "     0in: $_" if ($opt_d);
+            }
+            
+            elsif ($in_rcs_log || /$any_rcs/) {
+                $rcs_line_cnt++;
+                print "     RCS: $_" if ($opt_d);
+            }
+            
+            # Try to guess dead commented out code.
+            elsif (/;/) {
+                $dead_code_cnt++;
+		print "    DEAD2: $_" if ($opt_d);
+            }
+            
+            elsif ($temp =~ /\w/) {
+                $comment_line_cnt++;
+                print "     CMT: $_" if ($opt_d);
+            }
+            
+            else {
+                $blank_comment_line_cnt++;
+                print "BLANKCMT2: $_" if ($opt_d);
+            }
+
+            # Detect that we are out of a c style block comment. And if we are
+            # in 0in comment also end it.
+            #
+            if (/\*\//) {
+                print "END_C_BLK_CMT: " if ($opt_d);
+                $in_c_blk_comment = 0;
+                $in_0in = 0;
+            }
+
+	}
+
+        # Count blank lines
+        #
+	elsif (/^([\s]*\n)/) {
+	    $blank_line_cnt++;
+            print "   BLANK: $_" if ($opt_d);
+	}
+
+	elsif (/^__END__\b/) {
+	    last;
+	}
+
+        # The only thing we have left is code.
+        #
+	else {
+	    $code_line_cnt++;
+            print "    CODE: $_" if ($opt_d);
+
+            if (/($comment)+(.*)/) {
+                if ($2 =~ /\w/) {
+                    $eol_comment_line_cnt++;
+                }
+            }
+	}	
+    }
+
+    $comment =~ s/\\//g;
+    
+    if ($opt_v) {
+	print "($comment) File: $file\n";
+	print "      Code          : $code_line_cnt\n";
+        print "      0in           : $z0in_line_cnt ($z0in_cnt assertions)\n" if ($z0in_cnt > 0);
+        print "      foo assert  : $foo_assrt_line_cnt ($foo_assrt_cnt assertions)\n" if ($foo_assrt_cnt > 0);
+        print "      foo ifdef   : $foo_ifdef_cnt \n" if ($foo_ifdef_cnt > 0);
+        print "      foo label   : $foo_label_cnt \n" if ($foo_label_cnt > 0);
+	print "      Comment       : $comment_line_cnt\n" if ($opt_v >= 2);
+	print "      Block cmt     : $block_comment_line_cnt\n" if ($opt_v >= 2);
+        print "      EOL cmt       : $eol_comment_line_cnt\n" if ($opt_v >= 2);
+        print "      Dead code     : $dead_code_cnt\n" if ($opt_v >= 2);
+	print "      Blank         : $blank_line_cnt\n" if ($opt_v >= 3);
+        print "      Blank cmt     : $blank_comment_line_cnt\n" if ($opt_v >= 3);
+        print "      RCS           : $rcs_line_cnt\n" if ($opt_v >= 4);
+        print "      CODEREVIEW    : $codereview\n" if ($codereview > 0);
+        print "      CODEREVIEW_AR : $codereview_ar\n" if ($codereview_ar > 0);
+        print "      TODO/FIXME    : $todofixme\n" if ($todofixme > 0);
+    }
+    else {
+	print "($comment) $file : $code_line_cnt\n";
+        print "      0in           : $z0in_line_cnt ($z0in_cnt assertions)\n" if ($z0in_cnt > 0);
+        print "      foo assert  : $foo_assrt_line_cnt ($foo_assrt_cnt assertions)\n" if ($foo_assrt_cnt > 0);
+        print "      foo ifdef   : $foo_ifdef_cnt \n" if ($foo_ifdef_cnt > 0);
+        print "      foo label   : $foo_label_cnt \n" if ($foo_label_cnt > 0);
+        print "      CODEREVIEW    : $codereview\n" if ($codereview > 0);
+        print "      CODEREVIEW_AR : $codereview_ar\n" if ($codereview_ar > 0);
+        print "      TODO/FIXME    : $todofixme\n" if ($todofixme > 0);
+    }
+
+    $total_cnt += $code_line_cnt;
+    $total_blank += $blank_line_cnt;
+    $total_comment += $comment_line_cnt;
+    $total_dead_code += $dead_code_cnt;
+    $total_blk_cmt += $block_comment_line_cnt;
+    $total_eol_cmt += $eol_comment_line_cnt;
+    $total_blank_cmt += $blank_comment_line_cnt;
+    $total_0in += $z0in_cnt;
+    $total_0in_line += $z0in_line_cnt;
+    $total_foo_assrt += $foo_assrt_cnt;
+    $total_foo_assrt_line += $foo_assrt_line_cnt;
+    $total_foo_ifdef += $foo_ifdef_cnt;
+    $total_foo_label += $foo_label_cnt;
+    $total_rcs_log += $rcs_line_cnt;
+    $total_codereview += $codereview;
+    $total_codereview_ar += $codereview_ar;
+    $total_todofixme += $todofixme;
+}
+
+printf "\n".
+       "Total code lines for %3d files : $total_cnt\n", $total_files;
+print  "      0in                      : $total_0in_line ($total_0in assertions)\n" if ($total_0in > 0);
+print  "      foo assertions         : $total_foo_assrt_line ($total_foo_assrt assertions)\n" if ($total_foo_assrt > 0);
+print  "      foo ifdef              : $total_foo_ifdef \n" if ($total_foo_ifdef > 0);
+print  "      foo label              : $total_foo_label \n" if ($total_foo_label > 0);
+print  "      comment lines            : $total_comment\n".
+       "      block comment lines      : $total_blk_cmt\n".
+       "      end of line comments     : $total_eol_cmt\n".
+       "      dead code lines          : $total_dead_code\n".
+       "      blank lines              : $total_blank\n".
+       "      blank comment lines      : $total_blank_cmt\n".
+       "      rcs lines                : $total_rcs_log\n";
+print  "      REVIEW                   : $total_codereview\n" if ($total_codereview > 0);
+print  "      REVIEW_AR                : $total_codereview_ar\n" if ($total_codereview_ar > 0);
+print  "      TODO/FIXME               : $total_todofixme\n" if ($total_todofixme > 0);
+
+
+
+  
+sub filetype
+{
+    my $file;
+
+    ($file) = @_;
+
+    if ($file =~ /\.(pm|pl|hdl)$/) {
+	return("#", 0);
+    }
+    elsif ($file =~ /\.(sv|svh|sva|vs|vh|chf|plg)$/) {
+        return('//|/\*', 0);
+    }
+    elsif ($file =~ /\.e$/) {
+        return("--|\/\/", 1);
+    }
+    elsif ($file =~ /\.(fasm|finc)$/) {
+        # Set flag to indicate this is foo being analyzed
+        $foo_mode = 1;
+
+        # foo may need special handling
+        # In addtion to comments "//", there are also:
+        #    other special directives "`"
+        # For now all of these will be counted as comments
+        #
+        return("\/\/|`", 0);
+    }
+    else {
+	open (FILE, $file) or die "Cannot open $file: $!\n";;
+	$_ = <FILE>;
+	close (FILE);
+	if (/^\#\!.*perl/) {
+	    return ("#", 0);
+	}
+	elsif (/^\s*\!/) {
+	    return ("!", 0);
+	}
+	else {
+	    return (0, 0);
+	}
+    }
+}
+
+sub help
+{
+    print "\nThis script counts the number of code, comment and blank line and many other\n",
+          "attributes of a program. Usage:\n\n",
+	  "        cnt -c \"<comment character>\" -v<1,2,3> <files>\n\n",
+          "            -v1  Print number of code lines (default)\n",
+          "            -v2  Print number of code and comment lines\n",
+          "            -v3  Print number of code, comment and blank lines\n\n",
+          "The script will detect perl, ihdl, e, vs, vh, chf, plg files automatically and set\n",
+          "the correct comment character to use. However if you get a warning saying unable to\n",
+          "determine file type, then use the -c switch to set the comment char. c style block\n",
+          "comment is now supported, -c \'\/\\*\' to use. You can use any regular exp for -c\n",
+          "switch eg. -c \'\/\\*\|//' .\n\n";
+
+    exit;
+}

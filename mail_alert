@@ -1,0 +1,344 @@
+#! /usr/bin/perl -w
+
+#use "/afs/pdx.intel.com/tools/lib/perl/Util";
+use Getopt::Long;
+
+@weekday = ("Sunday", "Monday", "Tuesday", "Wednesday",
+            "Thursday", "Friday", "Saturday");
+@month   = ("January", "February", "March", "April",
+            "May", "June", "July", "August", "September",
+            "October", "November", "December");
+@dayspermonth = (31, 28, 31, 30, 31, 30,
+                 31, 31, 30, 31, 30, 31);
+
+$secondspermin  = 60;
+$secondsperhour = 60 * $secondspermin;
+$secondsperday  = 24 * $secondsperhour;
+
+# Print out the current date and time
+#
+($cur_sec, $cur_min, $cur_hour, $cur_day, $cur_month,
+ $cur_year, $cur_wday,,,) = localtime;
+$cur_print_year = $cur_year + 1900;
+printf("Current date/time is %02d:%02d:%02d ".
+       $weekday[$cur_wday].", ".$month[$cur_month].
+       " $cur_day, $cur_print_year\n", $cur_hour, $cur_min, $cur_sec);
+
+# These are here to keep perl happy
+#
+$address = $message_file = undef;
+
+$done = 0;
+
+$opt_help = $opt_subject = $opt_address = undef;
+$opt_file = $opt_date = $opt_time = undef;
+
+# Call a standard command line parsing routine to read switches.
+#
+&GetOptions("help|h",
+            "subject=s",
+            "address=s",
+            "file=s",
+            "date=s",
+            "time=s");
+
+if ($opt_help) {
+   &Help;
+   exit(0);
+}
+
+if ($opt_file) {
+   $message_file = $opt_file;
+} else {
+   print "ERROR: message filename must be specified\n";
+   exit (1);
+}
+
+if ($opt_address) {
+   $address = $opt_address;
+} else {
+   print "ERROR: address must be specified\n";
+}
+
+if ($opt_subject) {
+   $subject = $opt_subject;
+} else {
+   $subject = "";
+   print "WARNING: no subject was specified, using an empty string\n";
+}
+
+if ($opt_date) {
+   ($trigger_month, $trigger_day, $trigger_year) = split /-/, $opt_date;
+   $trigger_month--;
+   if ((!defined $trigger_month) || (!defined $trigger_day)) {
+      print "ERROR: malformed date argument ($opt_date)\n";
+      &Help;
+      exit(1);
+   } 
+   if (defined $trigger_year) {
+      if ($trigger_year < 100) {
+         $trigger_year += 100;
+      } elsif ($trigger_year > 2000) {
+         $trigger_year -= 1900;
+      }
+   } else {
+      $trigger_year = $cur_year;
+   }
+   $fail = 0;
+   if ($trigger_year < $cur_year) {
+      print "failing on year $trigger_year < $cur_year\n";
+      $fail = 1;
+   } elsif (($trigger_year == $cur_year) &&
+            ($trigger_month < $cur_month)) {
+      print "failing on year $trigger_month < $cur_month\n";
+      $fail = 1;
+   } elsif (($trigger_year == $cur_year) &&
+            ($trigger_month == $cur_month) &&
+            ($trigger_day < $cur_day)) {
+      print "failing on year $trigger_day < $cur_day\n";
+      $fail = 1;
+   }
+   if ($fail) {
+      print "ERROR: Trigger date < current date\n";
+      exit(1);
+   } else {
+      $trigger_print_year = $trigger_year + 1900;
+      print "Date trigger set to ".$month[$trigger_month]." $trigger_day, $trigger_print_year\n";
+   }
+} else {
+   if ($opt_time) {
+      $trigger_day   = $cur_day;
+      $trigger_month = $cur_month;
+      $trigger_year  = $cur_year;
+   }
+   print "No date specified sending it today\n";
+}
+
+if ($opt_time) {
+   ($trigger_hour, $trigger_min, $trigger_sec) = split /:/, $opt_time;
+   if ((!defined $trigger_hour) || (!defined $trigger_min)) {
+      print "ERROR: malformed time argument ($opt_time)\n";
+      &Help;
+      exit(1);
+   } 
+   if (!defined $trigger_sec) {
+      $trigger_sec = 0;
+   }
+
+   if ($opt_date && (($trigger_year == $cur_year) &&
+                     ($trigger_month == $cur_month) &&
+                     ($trigger_day == $cur_day))) {
+      $fail = 0;
+      if ($trigger_hour < $cur_hour) {
+         print "failing on year $trigger_hour < $cur_hour\n";
+         $fail = 1;
+      } elsif (($trigger_min < $cur_min) &&
+               ($trigger_hour == $cur_hour)) {
+         print "failing on year $trigger_min < $cur_min\n";
+         $fail = 1;
+      } elsif (($trigger_sec < $cur_sec) &&
+               ($trigger_hour == $cur_hour) &&
+               ($trigger_min == $cur_min)) {
+         print "failing on year $trigger_sec < $cur_sec\n";
+         $fail = 1;
+      }
+      if ($fail) {
+         print "ERROR: Trigger time < current time\n";
+         exit(1);
+      }
+   }
+   printf("Time trigger set to %02d:%02d:%02d\n", $trigger_hour, $trigger_min, $trigger_sec);
+} else {
+   if ($opt_date) {
+      print "No time specified sending it at midnight on the trigger date\n";
+      $trigger_hour = 0;
+      $trigger_min  = 0;
+      $trigger_sec  = 0;
+   } else {
+      print "No time specified sending it immediately\n";
+   }
+}
+
+# If no date or time was specified, send mail right now
+#
+unless ($opt_date || $opt_time) {
+   &send_mail;
+   $done = 1;
+}
+
+# Now check to see if we've already hit the trigger
+# (I don't think this will ever fire)
+#
+&get_cur_time;
+if ($trigger_year <= $cur_year) {
+ if ($trigger_month <= $cur_month) {
+  if ($trigger_day <= $cur_day) {
+   if ($trigger_hour <= $cur_hour) {
+    if ($trigger_min <= $cur_min) {
+     if ($trigger_sec <= $cur_sec) {
+      print "Somehow we slipped past the trigger, seding mail immediately\n";
+      &send_mail;
+      $done = 1;
+}}}}}}
+
+# Now wait until the trigger fires and send mail
+#
+
+# Synchronize seconds
+#
+print "synchronizing seconds\n";
+&get_cur_time;
+if ($trigger_sec != $cur_sec) {
+   if ($trigger_sec > $cur_sec) {
+      sleep($trigger_sec - $cur_sec);
+   } else {
+      sleep((60 - $cur_sec) + $trigger_sec);
+   }
+   print "seconds synchronized\n";
+}
+
+# Synchronize minutes
+#
+print "synchronizing minutes\n";
+&get_cur_time;
+if ($trigger_min != $cur_min) {
+   if ($trigger_min > $cur_min) {
+      sleep(($trigger_min - $cur_min) * $secondspermin);
+   } else {
+      sleep(((60 - $cur_min) + $trigger_min) * $secondspermin);
+   }
+   print "minutes synchronized\n";
+}
+
+# Synchronize hours
+#
+print "synchronizing hours\n";
+&get_cur_time;
+if ($trigger_hour != $cur_hour) {
+   if ($trigger_hour > $cur_hour) {
+      sleep(($trigger_hour - $cur_hour) * $secondsperhour);
+   } else {
+      sleep(((24 - $cur_hour) + $trigger_hour) * $secondsperhour);
+   }
+   print "hours synchronized\n";
+}
+
+# Synchronize days
+#
+print "synchronizing days\n";
+&get_cur_time;
+if ($trigger_day != $cur_day) {
+   if ($trigger_day > $cur_day) {
+      sleep(($trigger_day - $cur_day) * $secondsperday);
+   } else {
+      sleep(((&get_dayspermonth($cur_month) - $cur_day) + $trigger_min) * $secondsperday);
+   }
+   print "days synchronized\n";
+}
+
+###############################
+# The rest of this can wait since right now
+# I'm not going to be using it for longer than 
+# a month.
+###############################
+
+# Synchronize months
+#
+#&get_cur_time;
+#if ($trigger_min != $cur_min) {
+#   if ($trigger_min > $cur_min) {
+#      sleep($trigger_min - $cur_min);
+#   } else {
+#      sleep((60 - $cur_min) + $trigger_min);
+#   }
+#   print "minutes synchronized\n";
+#}
+#
+## Synchronize years
+##
+#&get_cur_time;
+#if ($trigger_min != $cur_min) {
+#   if ($trigger_min > $cur_min) {
+#      sleep($trigger_min - $cur_min);
+#   } else {
+#      sleep((60 - $cur_min) + $trigger_min);
+#   }
+#   print "minutes synchronized\n";
+#}
+
+&send_mail;
+
+############################################################
+# Subroutines
+############################################################
+
+sub get_cur_time {
+   ($cur_sec, $cur_min, $cur_hour, $cur_day, $cur_month,
+    $cur_year,,,,) = localtime; 
+}
+
+sub get_dayspermonth {
+   my $month = $_[0];
+   my $year  = $_[1];
+   my $days;
+
+   $days = $dayspermonth[$month];
+
+   if ($month == 2) {
+      # This is February so we have to check if it is a leap year
+      if (($year - 100) % 4) {
+         # do nothing, not a leap year
+      } else {
+         # leap year AND February, increase days to 29
+         $days++;
+      }
+   }
+   return $days;
+}
+  
+sub send_mail {
+   printf ("reached trigger of (%02d:%02d:%02d ".
+           $weekday[$cur_wday].", ".$month[$cur_month].
+           " $cur_day, $cur_print_year)\n", $cur_hour, $cur_min, $cur_sec);
+
+   # Check to see if the input file exists
+   #
+   if (-e $message_file) {
+      unless (-T $message_file) {
+         print "ERROR: file $message_file isn't a text file\n";
+         exit(1);
+      }
+   } else {
+      print "ERROR: file $message_file doesn't exist\n";
+      exit(1);
+   }
+   if ($subject) {
+      print "sending mail to address ($address) with subject ($subject) from file ($message_file)\n";
+      system ("mail -s \'$subject\' $address < $message_file");
+   } else {
+      print "sending mail to address ($address) from file ($message_file)\n";
+      system ("mail $address < $message_file");
+   }
+   print "$0 is done, exiting\n";
+   exit(0);
+}
+
+sub Help {
+   print <<END_OF_HELP;
+
+$0
+         
+Switches:
+
+ -h, -help     : Display this help screen
+ -subject      : Message to be displayed in the subject field
+                 (must be surrounded by quotes)
+ -address      : Address to mail to
+ -file         : File containing the message
+ -date         : Date to send mail (default is current day)
+ -time         : Time to send mail (default is current time if no
+                 date is specified, 12 midnight otherwise)
+
+    
+END_OF_HELP
+}

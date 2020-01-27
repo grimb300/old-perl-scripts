@@ -1,0 +1,88 @@
+#! /usr/bin/perl
+
+# Grab the -n switch off the command line
+# if none given, we will print the top ten
+#
+$top_n = 10;
+for ($i=0; $i<scalar(@ARGV);$i++) {
+   if ($ARGV[$i] eq "-n") {
+      $i++;
+      $top_n = $ARGV[$i];
+   }
+}
+
+# Initialize vars
+#
+@output;
+$total_size = 0;
+
+# Get the DU info for the current directory
+#
+open DU_OUT, "du -k | grep -v '\/.*\/'|" or die "can't du directory\n";
+
+while (<DU_OUT>) {
+   chomp;
+   ($size, $dir) = split /\s/;
+   $dir =~ s/\.\///;
+
+   # Grab the size of the current directory
+   #
+   if ($dir eq ".") {
+      $total_size = $size;
+   }
+
+   # Only keep info if it isn't current or parent directory
+   #
+   unless (($dir eq ".") || ($dir eq "..")) {
+      $dirs{$size}{DIR}  = $dir;
+      $dirs{$size}{USER} = (getpwuid ((stat $dir)[4]))[0]
+   }
+}
+
+# Sort the directories by size in decending order
+# and calculate the width of each field
+#
+$size_width = 0;
+$dir_width  = 0;
+$user_width = 0;
+
+foreach $size (sort by_number (keys(%dirs))) {
+   # Check to see if this is the last record to print
+   #
+   last if ($top_n-- == 0);
+
+   # Update the length of the fields
+   #
+   $size_width = length("$size")
+      if (length("$size") > $size_width);
+   $dir_width = length($dirs{$size}{DIR})
+      if (length($dirs{$size}{DIR}) > $dir_width);
+   $user_width = length($dirs{$size}{USER})
+      if (length($dirs{$size}{USER}) > $user_width);
+
+   # Push the size (data structure index) on the output stack
+   #
+   push @output, $size;
+}
+
+# Now print out the report
+#
+printf("\ndu_sort: Top %d hogs for directory %s\n", scalar(@output), `apwd`);
+printf("\t%-${size_width}s     (%)  %-${dir_width}s  %-${user_width}s\n", "Size", "Directory", "Owner");
+print "\t"."-"x$size_width."--------  "."-"x$dir_width."  "."-"x$user_width."\n";
+foreach $size (@output) {
+   printf("\t%${size_width}d %7s  %-${dir_width}s  %-${user_width}s\n",
+          $size, sprintf("(%.1f%)", $size / $total_size * 100),
+          $dirs{$size}{DIR}, $dirs{$size}{USER});
+}
+print "\n";
+
+sub by_number {
+    if ($a > $b) {
+        return -1;
+    } elsif ($a == $b) {
+        return 0;
+    } elsif ($a < $b) {
+        return 1;
+    }
+}
